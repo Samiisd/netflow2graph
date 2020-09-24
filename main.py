@@ -9,7 +9,6 @@ import socket
 
 from pathlib import Path
 
-from tqdm import tqdm
 import dpkt
 import pyshark
 
@@ -54,7 +53,7 @@ def dump_packets(p_input, csvfile):
     writer.writerow(['time', 'ip_src', 'ip_dst', 'port_src', 'port_dst', 'protocol', 'length'])
     packet_ignored = 0
 
-    for packet in tqdm(capture):
+    for packet in capture:
         ip = getattr(packet, 'ip', None)
         tcpudp = getattr(packet, 'tcp', None) or getattr(packet, 'udp', None)
         info = getattr(packet, 'frame_info', None)
@@ -86,21 +85,27 @@ def dump_packets2(p_input: Path, csvfile):
 
     with p_input.open("rb") as fs_pcap:
         cap = dpkt.pcap.Reader(fs_pcap)
-        for ts, buf in tqdm(cap): 
+        for ts, buf in cap: 
             eth = dpkt.ethernet.Ethernet(buf) 
             if not isinstance(eth.data, dpkt.ip.IP): 
+                logging.debug("skipping: no instance of IP")
                 packet_ignored += 1
                 continue
             ip = eth.data
             ip_src, ip_dst = inet_to_str(ip.src), inet_to_str(ip.dst) 
             if not (ip_src and ip_dst):
+                logging.debug(f"skipping: no ip src or dst ({ip_src} => {ip_dst})")
                 packet_ignored += 1
                 continue
             proto = ip.get_proto(ip.p).__name__ 
-            if not (isinstance(ip.data, dpkt.tcp.TCP) or isinstance(ip.data, dpkt.udp.UDP)): 
+            port_src, port_dst = 0, 0
+            if isinstance(ip.data, dpkt.tcp.TCP) or isinstance(ip.data, dpkt.udp.UDP):
+                port_src, port_dst = ip.data.sport, ip.data.dport
+            elif not isinstance(ip.data, dpkt.icmp.ICMP):
+                logging.debug(f"skipping: no instance TCP/UDP/ICMP")
                 packet_ignored += 1
                 continue
-            writer.writerow([ts, ip_src, ip_dst, ip.data.sport, ip.data.dport, proto, ip.len])
+            writer.writerow([ts, ip_src, ip_dst, port_src, port_dst, proto, ip.len])
 
     return packet_ignored
 
