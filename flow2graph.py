@@ -174,11 +174,12 @@ def plot_flow_graph(g, malicious=None, normal=None):
         e['weight'] =  e['features'][2]
 
     pos = nx.spring_layout(g)
+    valid_ip = set(pos.keys())
 
     options_big_nodes = {"node_size": 200, "alpha": 1.0}
     nx.draw_networkx_nodes(g, pos, node_color='black', alpha=0.3, node_size=options_big_nodes['node_size']//10, label='background')
-    nx.draw_networkx_nodes(g, pos, nodelist=malicious, node_color="r", **options_big_nodes, label='malicious')
-    nx.draw_networkx_nodes(g, pos, nodelist=normal, node_color="b", **options_big_nodes, label='normal')
+    nx.draw_networkx_nodes(g, pos, nodelist=valid_ip & malicious, node_color="r", **options_big_nodes, label='malicious')
+    nx.draw_networkx_nodes(g, pos, nodelist=valid_ip & normal, node_color="b", **options_big_nodes, label='normal')
 
     nx.draw_networkx_edges(g, pos, width=0.5, style='dashed')
     nx.draw_networkx_edges(g, pos, edgelist=edge_filter(Label.malicious), width=2, alpha=0.8, edge_color='r')
@@ -203,7 +204,10 @@ def main():
         print('n_flow_background =', n_labels[Label.background.value])
         print('n_flow_normal     =', n_labels[Label.normal.value])
         print('n_flow_malicious  =', n_labels[Label.malicious.value])
-        break
+        if n_labels[Label.malicious.value] > 50:
+            print('ploting graph')
+            plot_flow_graph(g, dt._ip_malicious, dt._ip_normal)
+            break
     return 0
 
 if __name__ == '__main__':
