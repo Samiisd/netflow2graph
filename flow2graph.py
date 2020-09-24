@@ -157,6 +157,32 @@ class NetflowDataset:
         }
 
 
+import matplotlib.pyplot as plt
+def plot_flow_graph(g, malicious=None, normal=None):
+    def edge_filter(label: Label):
+        return list(filter(lambda e: g[e[0]][e[1]]['label'] == label.value, g.edges))
+
+    malicious, normal = malicious or set(), normal or set()
+
+    for (s, t) in g.edges:
+        e = g[s][t]
+        e['weight'] =  e['features'][2]
+
+    pos = nx.spring_layout(g)
+
+    options_big_nodes = {"node_size": 200, "alpha": 1.0}
+    nx.draw_networkx_nodes(g, pos, node_color='black', alpha=0.3, node_size=options_big_nodes['node_size']//10, label='background')
+    nx.draw_networkx_nodes(g, pos, nodelist=malicious, node_color="r", **options_big_nodes, label='malicious')
+    nx.draw_networkx_nodes(g, pos, nodelist=normal, node_color="b", **options_big_nodes, label='normal')
+
+    nx.draw_networkx_edges(g, pos, width=0.5, style='dashed')
+    nx.draw_networkx_edges(g, pos, edgelist=edge_filter(Label.malicious), width=2, alpha=0.8, edge_color='r')
+    nx.draw_networkx_edges(g, pos, edgelist=edge_filter(Label.normal), width=2, alpha=0.8, edge_color='b')
+
+    plt.axis('off')
+    return plt.show()
+
+
 import json
 def main():
     dt = NetflowDataset(
