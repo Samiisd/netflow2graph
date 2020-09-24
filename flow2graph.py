@@ -98,9 +98,14 @@ class NetflowDataset:
             intervals = pd.interval_range(df.time.iloc[0], df.time.iloc[-1] + pd.Timedelta(1, unit='T'), freq=f'{self._window_time_sec}S', closed='neither')
             # FIXME: URGENT: should take into account the overlap with previous chunk
             for interval in intervals:
+                local_n_labels = df.label.value_counts()
+                n_labels = np.zeros(len(Label))
+                n_labels[local_n_labels.index] += local_n_labels.values
+
                 df_window = df[df.time.between(interval.left, interval.right)]
                 df_window = self._feature_window(df)
-                yield self._pd2graph(df_window)
+
+                yield self._pd2graph(df_window), n_labels.astype(np.uint64)
 
     def get_features(self) -> Optional[Dict]:
         n_iterations = 0
@@ -191,8 +196,13 @@ def main():
             ip_malicious={'147.32.84.165', '147.32.84.191', '147.32.84.192'},
             ip_normal={'147.32.84.170', '147.32.84.134', '147.32.84.164', '147.32.87.36', '147.32.80.9', '147.32.87.11'}
         )
-    for g in dt:
-        print(g['147.32.84.170'])
+    print("Time window size:", dt._window_time_sec, "seconds")
+    for (i, (g, n_labels)) in enumerate(dt):
+        print("Graph", i)
+        print(nx.classes.function.info(g))
+        print('n_flow_background =', n_labels[Label.background.value])
+        print('n_flow_normal     =', n_labels[Label.normal.value])
+        print('n_flow_malicious  =', n_labels[Label.malicious.value])
         break
     return 0
 
