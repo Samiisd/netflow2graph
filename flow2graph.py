@@ -9,6 +9,7 @@ from enum import Enum
 import numpy as np
 import pandas as pd
 import networkx as nx
+import matplotlib.pyplot as plt
 
 from tqdm import tqdm
 
@@ -55,7 +56,7 @@ class NetflowDataset:
                 .reset_index()
 
         # get flow duration
-        duration = (df.time['max']-df.time['min']).dt.total_seconds()
+        duration = df.time['max'] - df.time['min']
         df = df.drop('time', axis=1, level=0)
 
         # normalize by time window
@@ -72,8 +73,9 @@ class NetflowDataset:
 
         return df
 
-    def _pd2graph(self, df):
-        return nx.from_pandas_edgelist(
+    @staticmethod
+    def _pd2graph(df):
+        g: nx.Graph = nx.from_pandas_edgelist(
                 df,
                 source='ip_src',
                 target='ip_dst',
@@ -82,28 +84,38 @@ class NetflowDataset:
                 # FIXME: should consider using `edge_key` to have multigraph for the different protocols (TCP/UDP/ICMP)
         )
 
+        nx.set_node_attributes(g, Label.background.value, 'label')
+        nx.set_node_attributes(g, {k: Label.normal.value for k in df[df.label == Label.normal.value].ip_src}, 'label')
+        nx.set_node_attributes(g, {k: Label.malicious.value for k in df[df.label == Label.malicious.value].ip_src}, 'label')
+
+        return g
+
     def _iter_csv(self, annotate=True):
         df = pd.read_csv(self._csvfile,
                          compression='gzip',
-                         dtype=NetflowDataset._pd_dtype, chunksize=self._chunksize,
-                         parse_dates=['time'],\
-                         date_parser=lambda x: datetime.fromtimestamp(float(x)))
+                         dtype=NetflowDataset._pd_dtype, chunksize=self._chunksize)
         for chunk in df:
             if annotate:
                 chunk = self._annotate(chunk)
             yield chunk
 
+    @staticmethod
+    def interval_range(a, b, freq):
+        it = a + freq
+        while a < b:
+            yield a, min(it, b)
+            a, it = a + freq, it + freq
+
     def __iter__(self):
         for df in self._iter_csv(annotate=True):
-            intervals = pd.interval_range(df.time.iloc[0], df.time.iloc[-1] + pd.Timedelta(1, unit='T'), freq=f'{self._window_time_sec}S', closed='neither')
             # FIXME: URGENT: should take into account the overlap with previous chunk
-            for interval in intervals:
+            for (left, right) in self.interval_range(df.time.iloc[0], df.time.iloc[-1], freq=self._window_time_sec):
                 local_n_labels = df.label.value_counts()
                 n_labels = np.zeros(len(Label))
                 n_labels[local_n_labels.index] += local_n_labels.values
 
-                df_window = df[df.time.between(interval.left, interval.right)]
-                df_window = self._feature_window(df)
+                df_window = df[df.time.between(left, right)]
+                df_window = self._feature_window(df_window)
 
                 yield self._pd2graph(df_window), n_labels.astype(np.uint64)
 
@@ -119,7 +131,8 @@ class NetflowDataset:
             unique_ip |= set(pd.unique(df[['ip_src', 'ip_dst']].values.ravel('K')))
 
             local_flow_quantity = df.groupby('label').agg({'length': ['sum', 'mean', 'std']})
-            flow_quantity = local_flow_quantity if flow_quantity is None else flow_quantity.add(local_flow_quantity, fill_value=0)
+            flow_quantity = local_flow_quantity if flow_quantity is None else flow_quantity.add(local_flow_quantity,
+                                                                                                fill_value=0)
 
             n_iterations += 1
 
@@ -162,7 +175,6 @@ class NetflowDataset:
         }
 
 
-import matplotlib.pyplot as plt
 def plot_flow_graph(g, malicious=None, normal=None):
     def edge_filter(label: Label):
         return list(filter(lambda e: g[e[0]][e[1]]['label'] == label.value, g.edges))
@@ -171,7 +183,7 @@ def plot_flow_graph(g, malicious=None, normal=None):
 
     for (s, t) in g.edges:
         e = g[s][t]
-        e['weight'] =  e['features'][2]
+        e['weight'] = e['features'][2]
 
     pos = nx.spring_layout(g)
     valid_ip = set(pos.keys())
@@ -189,7 +201,6 @@ def plot_flow_graph(g, malicious=None, normal=None):
     return plt.show()
 
 
-import json
 def main():
     dt = NetflowDataset(
             Path(sys.argv[1]),
@@ -209,6 +220,7 @@ def main():
             plot_flow_graph(g, dt._ip_malicious, dt._ip_normal)
             break
     return 0
+
 
 if __name__ == '__main__':
     sys.exit(main())
