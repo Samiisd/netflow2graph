@@ -3,7 +3,6 @@
 import sys
 from typing import Set, Optional, Dict
 from pathlib import Path
-from datetime import datetime
 from enum import Enum
 
 import numpy as np
@@ -31,7 +30,7 @@ class NetflowDataset:
     }
 
     def __init__(self, csvfile: Path, window_time_sec: int = 60, chunksize: int = int(1e6),
-            ip_normal: Optional[Set] = None, ip_malicious: Optional[Set] = None):
+                 ip_normal: Optional[Set] = None, ip_malicious: Optional[Set] = None):
         self._csvfile = csvfile
         self._window_time_sec = window_time_sec
         self._chunksize = chunksize
@@ -41,13 +40,15 @@ class NetflowDataset:
     def _annotate(self, df):
         df['label'] = Label.background.value
         if self._ip_malicious:
-            df.loc[(df.ip_src.isin(self._ip_malicious) | df.ip_dst.isin(self._ip_normal)), 'label'] = Label.malicious.value
+            mask = df.ip_src.isin(self._ip_malicious) | df.ip_dst.isin(self._ip_normal)
+            df.loc[mask, 'label'] = Label.malicious.value
         if self._ip_normal:
-            df.loc[(df.ip_src.isin(self._ip_normal) | df.ip_dst.isin(self._ip_normal)), 'label'] = Label.normal.value
+            mask = df.ip_src.isin(self._ip_normal) | df.ip_dst.isin(self._ip_normal)
+            df.loc[mask, 'label'] = Label.normal.value
         df.label = df.label.astype(np.uint8)
         return df
 
-    def _feature_window(self, df, normalize=True):
+    def compute_features(self, df, normalize=True):
         df = df.groupby(['ip_src', 'ip_dst', 'port_src', 'port_dst', 'protocol', 'label'])\
                .agg({
                    'time': ['max', 'min'],
@@ -74,7 +75,7 @@ class NetflowDataset:
         return df
 
     @staticmethod
-    def _pd2graph(df):
+    def to_graph(df):
         g: nx.Graph = nx.from_pandas_edgelist(
                 df,
                 source='ip_src',
@@ -86,7 +87,8 @@ class NetflowDataset:
 
         nx.set_node_attributes(g, Label.background.value, 'label')
         nx.set_node_attributes(g, {k: Label.normal.value for k in df[df.label == Label.normal.value].ip_src}, 'label')
-        nx.set_node_attributes(g, {k: Label.malicious.value for k in df[df.label == Label.malicious.value].ip_src}, 'label')
+        nx.set_node_attributes(g, {k: Label.malicious.value for k in df[df.label == Label.malicious.value].ip_src},
+                               'label')
 
         return g
 
@@ -99,25 +101,46 @@ class NetflowDataset:
                 chunk = self._annotate(chunk)
             yield chunk
 
-    @staticmethod
-    def interval_range(a, b, freq):
-        it = a + freq
-        while a < b:
-            yield a, min(it, b)
-            a, it = a + freq, it + freq
+    def _df_split_by_freq(self, df):
+        t_max_window = df.time.iloc[0] + self._window_time_sec
+        while len(df) > 1 and df.time.iloc[-1] - df.time.iloc[0] >= self._window_time_sec:
+            mask = df.time <= t_max_window
+            t_max_window += self._window_time_sec
+            yield df[mask]
+            df = df[~mask]
+        yield df
 
     def __iter__(self):
-        for df in self._iter_csv(annotate=True):
-            # FIXME: URGENT: should take into account the overlap with previous chunk
-            for (left, right) in self.interval_range(df.time.iloc[0], df.time.iloc[-1], freq=self._window_time_sec):
-                local_n_labels = df.label.value_counts()
-                n_labels = np.zeros(len(Label))
-                n_labels[local_n_labels.index] += local_n_labels.values
+        chunks = []
+        t_min, t_max = None, None
+        it_csv = self._iter_csv(annotate=True)
 
-                df_window = df[df.time.between(left, right)]
-                df_window = self._feature_window(df_window)
+        try:
+            while True:
+                df_chunk = next(it_csv)
+                chunks.append(df_chunk)
 
-                yield self._pd2graph(df_window), n_labels.astype(np.uint64)
+                t_min, t_max = (df_chunk.time.iloc[0] if t_min is None else t_min), df_chunk.time.iloc[-1]
+                while t_max-t_min < self._window_time_sec:
+                    df_chunk = next(it_csv)
+                    chunks.append(df_chunk)
+                    t_max = df_chunk.time.iloc[-1]
+
+                df_last = None
+                for df_window in self._df_split_by_freq(pd.concat(chunks)):
+                    if df_last is not None:
+                        yield df_last
+                    df_last = df_window
+
+                chunks = []
+                if df_last is not None and len(df_last) > 0:
+                    chunks = [df_last]
+                    t_min = df_last.time.iloc[0]
+                else:
+                    t_min = t_max
+        except StopIteration:
+            for df_window in self._df_split_by_freq(pd.concat(chunks)):
+                yield df_window
 
     def get_features(self) -> Optional[Dict]:
         n_iterations = 0
@@ -142,7 +165,9 @@ class NetflowDataset:
         flow_quantity.length['mean'] /= n_iterations
         flow_quantity.length['std'] /= n_iterations
 
-        nf_background, nf_normal, nf_malicious = n_labels[Label.background.value], n_labels[Label.normal.value], n_labels[Label.malicious.value]
+        nf_background = n_labels[Label.background.value]
+        nf_normal = n_labels[Label.normal.value]
+        nf_malicious = n_labels[Label.malicious.value]
 
         return {
             'malicious': {
@@ -177,7 +202,7 @@ class NetflowDataset:
 
 def plot_flow_graph(g, malicious=None, normal=None):
     def edge_filter(label: Label):
-        return list(filter(lambda e: g[e[0]][e[1]]['label'] == label.value, g.edges))
+        return list(filter(lambda edge: g[edge[0]][edge[1]]['label'] == label.value, g.edges))
 
     malicious, normal = malicious or set(), normal or set()
 
@@ -189,8 +214,10 @@ def plot_flow_graph(g, malicious=None, normal=None):
     valid_ip = set(pos.keys())
 
     options_big_nodes = {"node_size": 200, "alpha": 1.0}
-    nx.draw_networkx_nodes(g, pos, node_color='black', alpha=0.3, node_size=options_big_nodes['node_size']//10, label='background')
-    nx.draw_networkx_nodes(g, pos, nodelist=valid_ip & malicious, node_color="r", **options_big_nodes, label='malicious')
+    nx.draw_networkx_nodes(g, pos, node_color='black', alpha=0.3, node_size=options_big_nodes['node_size']//10,
+                           label='background')
+    nx.draw_networkx_nodes(g, pos, nodelist=valid_ip & malicious, node_color="r", **options_big_nodes,
+                           label='malicious')
     nx.draw_networkx_nodes(g, pos, nodelist=valid_ip & normal, node_color="b", **options_big_nodes, label='normal')
 
     nx.draw_networkx_edges(g, pos, width=0.5, style='dashed')
