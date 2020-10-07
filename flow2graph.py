@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import networkx as nx
 import matplotlib.pyplot as plt
+import json
 
 from tqdm import tqdm
 
@@ -29,13 +30,22 @@ class NetflowDataset:
         'length': np.uint16,
     }
 
+    @staticmethod
+    def load_from_labels(path: Path, **kwargs):
+        with path.open('r') as fs:
+            labels = json.load(fs)
+        for (name, info) in labels.items():
+            labels[name] = NetflowDataset(csvfile=path.parent/info['path'], ip_malicious=info['malicious'],
+                                          ip_normal=info['normal'],  **kwargs)
+        return labels
+
     def __init__(self, csvfile: Path, window_time_sec: int = 60, chunksize: int = int(1e6),
                  ip_normal: Optional[Set] = None, ip_malicious: Optional[Set] = None):
         self._csvfile = csvfile
         self._window_time_sec = window_time_sec
         self._chunksize = chunksize
-        self._ip_normal = ip_normal or set()
-        self._ip_malicious = ip_malicious or set()
+        self._ip_normal = set(ip_normal or [])
+        self._ip_malicious = set(ip_malicious or [])
 
     def _annotate(self, df):
         df['label'] = Label.background.value
@@ -200,14 +210,18 @@ class NetflowDataset:
         }
 
 
-def plot_flow_graph(g, malicious=None, normal=None):
+def plot_flow_graph(g):
     def edge_filter(label: Label):
         return list(filter(lambda edge: g[edge[0]][edge[1]]['label'] == label.value, g.edges))
 
-    malicious, normal = malicious or set(), normal or set()
-
-    for (s, t) in g.edges:
-        e = g[s][t]
+    malicious, normal = set(), set()
+    for (u, v) in g.edges:
+        e = g[u][v]
+        label = e['label']
+        if label == Label.malicious.value:
+            malicious.add(u)
+        elif label == Label.normal.value:
+            normal.add(u)
         e['weight'] = e['features'][2]
 
     pos = nx.spring_layout(g)
